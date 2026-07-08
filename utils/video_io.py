@@ -76,12 +76,15 @@ class VideoCapture:
 
     def read(self) -> Tuple[bool, Optional['numpy.ndarray']]:
         """Read the next frame. Returns (success, frame)."""
+        if self.cap is None:
+            return False, None
         return self.cap.read()
 
     def release(self):
         """Release the video capture resource."""
-        if self.cap:
+        if self.cap is not None:
             self.cap.release()
+            self.cap = None
             logger.info("Video capture released.")
 
     def __enter__(self):
@@ -138,12 +141,14 @@ class VideoWriter:
 
     def write(self, frame):
         """Write a single frame to the video file."""
-        self.writer.write(frame)
+        if self.writer is not None:
+            self.writer.write(frame)
 
     def release(self):
         """Release the video writer resource."""
-        if self.writer:
+        if self.writer is not None:
             self.writer.release()
+            self.writer = None
             logger.info(f"Video saved to: {self.output_path}")
 
     def __enter__(self):
