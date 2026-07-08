@@ -10,6 +10,7 @@ Orchestrates the per-frame flow:
     6. Update the log panel
 """
 
+import cv2
 import logging
 from typing import Dict
 
@@ -76,8 +77,10 @@ class ANPRPipeline:
             Annotated frame with log panel appended.
         """
         self.frame_count += 1
+        h, w = frame.shape[:2]
+        scale = getattr(config, "OUTPUT_SCALE", 1.0)
 
-        # ── Step 1: Detect vehicles ──
+        # ── Step 1: Detect vehicles (at native resolution for speed) ──
         detections = self.vehicle_detector.detect(frame)
 
         if detections:
@@ -93,10 +96,25 @@ class ANPRPipeline:
                 f"Frame {self.frame_count}: {len(tracked_objects)} tracked object(s)"
             )
 
-        # ── Step 3: Process each tracked vehicle ──
+        # ── Step 3: Create upscaled frame for drawing ──
+        annotated_frame = cv2.resize(
+            frame,
+            (int(w * scale), int(h * scale)),
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        # Calculate tripwire Y level on native resolution
+        tripwire_y = int(h * config.TRIPWIRE_Y_RATIO)
+        any_crossing = False
+
+        # ── Step 4: Process each tracked vehicle ──
         for tracked in tracked_objects:
             track_id = tracked.track_id
             bbox = tracked.bbox
+
+            # Check if this vehicle is currently crossing the tripwire
+            if bbox[1] <= tripwire_y <= bbox[3]:
+                any_crossing = True
 
             # Get or create vehicle record
             if track_id not in self.vehicle_records:
@@ -107,10 +125,18 @@ class ANPRPipeline:
             record = self.vehicle_records[track_id]
             record.update_position(bbox)
 
-            # Draw vehicle bounding box and ID
-            self.annotator.draw_vehicle_box(frame, bbox, track_id)
+            # Scale vehicle coordinates for drawing
+            scaled_bbox = (
+                bbox[0] * scale,
+                bbox[1] * scale,
+                bbox[2] * scale,
+                bbox[3] * scale
+            )
 
-            # ── Step 3a: Detect plate within vehicle ROI ──
+            # Draw vehicle bounding box and ID on the upscaled frame
+            self.annotator.draw_vehicle_box(annotated_frame, scaled_bbox, track_id, scale=scale)
+
+            # ── Step 4a: Detect plate within vehicle ROI (native resolution) ──
             plate_candidates = self.plate_detector.detect_in_roi(frame, bbox)
 
             best_candidate = None
@@ -120,7 +146,7 @@ class ANPRPipeline:
                 # Save the top candidate (which has highest contour score)
                 best_candidate = plate_candidates[0]
 
-                # ── Step 3b: Evaluate candidates with OCR ──
+                # ── Step 4b: Evaluate candidates with OCR ──
                 for candidate in plate_candidates:
                     ocr_result = self.plate_reader.read(candidate.crop)
 
@@ -132,15 +158,24 @@ class ANPRPipeline:
                             plate_text, confidence, candidate.bbox
                         )
 
+                        # Scale plate coordinates
+                        scaled_plate_bbox = (
+                            candidate.bbox[0] * scale,
+                            candidate.bbox[1] * scale,
+                            candidate.bbox[2] * scale,
+                            candidate.bbox[3] * scale
+                        )
+
                         # Draw green plate box for the successful candidate
-                        self.annotator.draw_plate_box(frame, candidate.bbox)
+                        self.annotator.draw_plate_box(annotated_frame, scaled_plate_bbox, scale=scale)
 
                         # Draw plate text on frame
                         self.annotator.draw_plate_text(
-                            frame,
+                            annotated_frame,
                             record.best_plate_text,
-                            bbox,
-                            candidate.bbox,
+                            scaled_bbox,
+                            scaled_plate_bbox,
+                            scale=scale,
                         )
 
                         # Log to panel if new or updated
@@ -163,33 +198,42 @@ class ANPRPipeline:
             # If no OCR success this frame
             if not ocr_success:
                 if best_candidate is not None:
+                    # Scale best candidate coordinates
+                    scaled_best_candidate_bbox = (
+                        best_candidate.bbox[0] * scale,
+                        best_candidate.bbox[1] * scale,
+                        best_candidate.bbox[2] * scale,
+                        best_candidate.bbox[3] * scale
+                    )
                     # Draw the green box of the top candidate so we still see a green box
-                    self.annotator.draw_plate_box(frame, best_candidate.bbox)
+                    self.annotator.draw_plate_box(annotated_frame, scaled_best_candidate_bbox, scale=scale)
                     
                     if record.has_plate:
                         # Draw historical plate text at the top candidate box
                         self.annotator.draw_plate_text(
-                            frame,
+                            annotated_frame,
                             record.best_plate_text,
-                            bbox,
-                            best_candidate.bbox,
+                            scaled_bbox,
+                            scaled_best_candidate_bbox,
+                            scale=scale,
                         )
                 elif record.has_plate:
                     # No candidates found but we have history — draw text at bottom of vehicle
                     self.annotator.draw_plate_text(
-                        frame,
+                        annotated_frame,
                         record.best_plate_text,
-                        bbox,
+                        scaled_bbox,
+                        scale=scale,
                     )
 
-            # ── Step 4: Check tripwire crossing ──
-            self._check_tripwire(record, frame.shape[0])
+            # ── Step 5: Check tripwire crossing (native height) ──
+            self._check_tripwire(record, h)
 
-        # ── Step 5: Draw tripwire line ──
-        self.annotator.draw_tripwire(frame)
+        # ── Step 6: Draw tripwire line on upscaled frame ──
+        self.annotator.draw_tripwire(annotated_frame, config.TRIPWIRE_Y_RATIO, is_alert=any_crossing, scale=scale)
 
-        # ── Step 6: Render log panel ──
-        annotated = self.log_panel.render(frame)
+        # ── Step 7: Render log panel ──
+        annotated = self.log_panel.render(annotated_frame, scale=scale)
 
         return annotated
 

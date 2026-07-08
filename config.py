@@ -48,27 +48,29 @@ TRIPWIRE_Y_RATIO = 0.75   # Position as fraction of frame height
 # ─────────────────────────────────────────────
 # UI / Visual Settings
 # ─────────────────────────────────────────────
+OUTPUT_SCALE = 2.0                      # HD Upscale multiplier for rendering annotations & logs
 LOG_PANEL_WIDTH = 320
 LOG_PANEL_MAX_ENTRIES = 20
-LOG_PANEL_BG_COLOR = (30, 30, 30)       # Dark gray
-LOG_PANEL_BG_ALPHA = 0.85               # Semi-transparent
+LOG_PANEL_BG_COLOR = (15, 15, 15)       # Cyberpunk dark background
+LOG_PANEL_BG_ALPHA = 0.90               # Less transparent for readability
 
 # Colors (BGR for OpenCV)
-COLOR_VEHICLE_BOX = (255, 150, 50)      # Blue-ish
-COLOR_VEHICLE_TEXT = (255, 150, 50)     # Same blue
-COLOR_PLATE_BOX = (0, 220, 0)          # Green
-COLOR_PLATE_TEXT_BG = (0, 180, 0)      # Darker green for text bg
-COLOR_PLATE_TEXT_FG = (255, 255, 255)  # White text
-COLOR_TRIPWIRE = (0, 255, 0)           # Bright green
-COLOR_LOG_TITLE = (0, 220, 0)          # Green
-COLOR_LOG_TEXT = (200, 200, 200)       # Light gray
-COLOR_LOG_SEPARATOR = (80, 80, 80)     # Dim gray
+COLOR_VEHICLE_BOX = (255, 180, 0)       # Cyan/electric blue (target tracking)
+COLOR_VEHICLE_TEXT = (255, 255, 255)    # Clean white
+COLOR_PLATE_BOX = (0, 255, 100)         # Neon green (success/active lock)
+COLOR_PLATE_TEXT_BG = (20, 20, 20)      # Sleek dark background for labels
+COLOR_PLATE_TEXT_FG = (0, 255, 100)     # Neon green text for labels
+COLOR_TRIPWIRE = (0, 255, 255)          # Bright Yellow/Amber for default state
+COLOR_TRIPWIRE_ALERT = (0, 0, 255)      # Red alert when vehicle crosses
+COLOR_LOG_TITLE = (255, 180, 0)         # Cyan title
+COLOR_LOG_TEXT = (220, 220, 220)        # Bright silver
+COLOR_LOG_SEPARATOR = (50, 50, 50)      # Dark gray borders
 
 # Font
-FONT_SCALE_ID = 0.6
-FONT_SCALE_PLATE = 0.7
-FONT_SCALE_LOG = 0.45
-FONT_THICKNESS = 2
+FONT_SCALE_ID = 0.5
+FONT_SCALE_PLATE = 0.6
+FONT_SCALE_LOG = 0.40
+FONT_THICKNESS = 1
 FONT_THICKNESS_LOG = 1
 
 # ─────────────────────────────────────────────
@@ -82,3 +84,4 @@ DEFAULT_FPS = 30.0
 # Camera Identifier (mock)
 # ─────────────────────────────────────────────
 CAMERA_ID = "CAM-01"
+

@@ -121,9 +121,10 @@ def main():
     pipeline = ANPRPipeline()
 
     # ── Initialize video writer ──
-    # Output width includes the log panel
-    output_width = video_cap.width + config.LOG_PANEL_WIDTH
-    output_height = video_cap.height
+    # Output width includes the log panel, upscaled for HD output
+    scale = getattr(config, "OUTPUT_SCALE", 1.0)
+    output_width = int(video_cap.width * scale) + int(config.LOG_PANEL_WIDTH * scale)
+    output_height = int(video_cap.height * scale)
 
     try:
         video_writer = VideoWriter(
