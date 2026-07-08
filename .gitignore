@@ -1,0 +1,28 @@
+# Python Virtual Environment and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Large Model weights
+*.pt
+models/license_plate_detector.pt
+
+# Output/Input videos
+*.mp4
+
+# Debug crops and images
+debug_crops/
+vehicle_lower.jpg
+detected_*.jpg
