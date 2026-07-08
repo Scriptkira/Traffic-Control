@@ -21,6 +21,7 @@ models/license_plate_detector.pt
 
 # Output/Input videos
 *.mp4
+!sample.mp4
 
 # Debug crops and images
 debug_crops/

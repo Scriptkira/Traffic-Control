@@ -7,7 +7,7 @@ import os
 import cv2
 import numpy as np
 
-VIDEO_PATH = r"D:\Traffic\Traffic-Control\input\1be628bc-c45e-4485-8bc8-296532215972.mp4"
+VIDEO_PATH = "sample.mp4"
 DEBUG_DIR = "debug_crops"
 os.makedirs(DEBUG_DIR, exist_ok=True)
 

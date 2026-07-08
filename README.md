@@ -75,14 +75,14 @@ The system works out of the box using OpenCV contour detection for plates. This 
 
 ## Usage
 
-### Basic usage (process a video file):
+### Basic usage (process the included sample video):
 ```bash
-python main.py --input video.mp4
+python main.py --input sample.mp4
 ```
 
 ### Save output and show preview:
 ```bash
-python main.py --input video.mp4 --output result.mp4 --show
+python main.py --input sample.mp4 --output result.mp4 --show
 ```
 
 ### Process from webcam:
@@ -92,12 +92,12 @@ python main.py --input 0 --output webcam_output.mp4
 
 ### Headless mode (no preview window):
 ```bash
-python main.py --input video.mp4 --output result.mp4 --no-show
+python main.py --input sample.mp4 --output result.mp4 --no-show
 ```
 
 ### Verbose logging:
 ```bash
-python main.py --input video.mp4 -v
+python main.py --input sample.mp4 -v
 ```
 
 ### Keyboard Controls (when preview is enabled):
