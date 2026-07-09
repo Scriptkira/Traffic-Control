@@ -79,9 +79,15 @@ class ANPRPipeline:
         self.frame_count += 1
         h, w = frame.shape[:2]
         scale = getattr(config, "OUTPUT_SCALE", 1.0)
+        detect_every = getattr(config, "DETECT_EVERY_N_FRAMES", 1)
 
-        # ── Step 1: Detect vehicles (at native resolution for speed) ──
-        detections = self.vehicle_detector.detect(frame)
+        # ── Step 1: Detect vehicles (skip frames for speed) ──
+        if self.frame_count % detect_every == 0:
+            detections = self.vehicle_detector.detect(frame)
+            self._last_detections = detections
+        else:
+            # Reuse last detections — tracker will predict positions
+            detections = getattr(self, "_last_detections", [])
 
         if detections:
             logger.debug(
@@ -142,58 +148,63 @@ class ANPRPipeline:
             best_candidate = None
             ocr_success = False
 
+            # Only run OCR on key frames, and skip if we already have a high-confidence reading
+            ocr_every = getattr(config, "OCR_EVERY_N_FRAMES", 1)
+            run_ocr = (self.frame_count % ocr_every == 0) and (not record.has_plate or record.best_confidence < 0.70)
+
             if plate_candidates:
                 # Save the top candidate (which has highest contour score)
                 best_candidate = plate_candidates[0]
 
-                # ── Step 4b: Evaluate candidates with OCR ──
-                for candidate in plate_candidates:
-                    ocr_result = self.plate_reader.read(candidate.crop)
+                # ── Step 4b: Evaluate candidates with OCR (only on key frames) ──
+                if run_ocr:
+                    for candidate in plate_candidates:
+                        ocr_result = self.plate_reader.read(candidate.crop)
 
-                    if ocr_result is not None:
-                        plate_text, confidence = ocr_result
+                        if ocr_result is not None:
+                            plate_text, confidence = ocr_result
 
-                        # Update vehicle record with best reading
-                        updated = record.update_plate(
-                            plate_text, confidence, candidate.bbox
-                        )
-
-                        # Scale plate coordinates
-                        scaled_plate_bbox = (
-                            candidate.bbox[0] * scale,
-                            candidate.bbox[1] * scale,
-                            candidate.bbox[2] * scale,
-                            candidate.bbox[3] * scale
-                        )
-
-                        # Draw green plate box for the successful candidate
-                        self.annotator.draw_plate_box(annotated_frame, scaled_plate_bbox, scale=scale)
-
-                        # Draw plate text on frame
-                        self.annotator.draw_plate_text(
-                            annotated_frame,
-                            record.best_plate_text,
-                            scaled_bbox,
-                            scaled_plate_bbox,
-                            scale=scale,
-                        )
-
-                        # Log to panel if new or updated
-                        if updated and record.best_plate_text:
-                            self.log_panel.add_entry(
-                                vehicle_id=track_id,
-                                plate_text=record.best_plate_text,
-                                confidence=record.best_confidence,
+                            # Update vehicle record with best reading
+                            updated = record.update_plate(
+                                plate_text, confidence, candidate.bbox
                             )
 
-                            logger.info(
-                                f"Plate detected — ID:{track_id} "
-                                f"Plate:{record.best_plate_text} "
-                                f"Conf:{confidence:.2f}"
+                            # Scale plate coordinates
+                            scaled_plate_bbox = (
+                                candidate.bbox[0] * scale,
+                                candidate.bbox[1] * scale,
+                                candidate.bbox[2] * scale,
+                                candidate.bbox[3] * scale
                             )
-                        
-                        ocr_success = True
-                        break  # Found a valid plate via OCR!
+
+                            # Draw green plate box for the successful candidate
+                            self.annotator.draw_plate_box(annotated_frame, scaled_plate_bbox, scale=scale)
+
+                            # Draw plate text on frame
+                            self.annotator.draw_plate_text(
+                                annotated_frame,
+                                record.best_plate_text,
+                                scaled_bbox,
+                                scaled_plate_bbox,
+                                scale=scale,
+                            )
+
+                            # Log to panel if new or updated
+                            if updated and record.best_plate_text:
+                                self.log_panel.add_entry(
+                                    vehicle_id=track_id,
+                                    plate_text=record.best_plate_text,
+                                    confidence=record.best_confidence,
+                                )
+
+                                logger.info(
+                                    f"Plate detected — ID:{track_id} "
+                                    f"Plate:{record.best_plate_text} "
+                                    f"Conf:{confidence:.2f}"
+                                )
+                            
+                            ocr_success = True
+                            break  # Found a valid plate via OCR!
 
             # If no OCR success this frame
             if not ocr_success:

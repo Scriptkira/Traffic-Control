@@ -27,11 +27,25 @@ VEHICLE_CLASSES = [2, 3, 5, 7]
 # ─────────────────────────────────────────────
 # OCR Settings
 # ─────────────────────────────────────────────
-OCR_CONFIDENCE_THRESHOLD = 0.1
+OCR_CONFIDENCE_THRESHOLD = 0.25
 OCR_LANGUAGES = ["ne", "en"]  # Supports both Devanagari (ne) and English (en) for Nepali plates
 OCR_CHAR_WHITELIST = None      # Disable strict whitelist to allow Devanagari characters
 OCR_MIN_PLATE_LENGTH = 3   # Reject readings shorter than this
 OCR_MAX_PLATE_LENGTH = 15  # Reject readings longer than this
+OCR_MIN_CROP_HEIGHT = 16   # Skip OCR below this crop height (px) — smaller crops
+                           # measured consistently <0.1 raw confidence (pure noise)
+
+# ─────────────────────────────────────────────
+# Plate Consensus
+# ─────────────────────────────────────────────
+PLATE_MIN_VOTES_TO_CONFIRM = 1  # OCR votes required before a reading is logged
+
+# ─────────────────────────────────────────────
+# Performance / Frame Skipping
+# ─────────────────────────────────────────────
+OCR_EVERY_N_FRAMES = 3     # Only run OCR every N frames (1 = every frame, 3 = skip 2)
+DETECT_EVERY_N_FRAMES = 2  # Only run YOLO detection every N frames (tracker fills gaps)
+
 
 # ─────────────────────────────────────────────
 # Tracker (SORT) Settings
@@ -76,8 +90,8 @@ FONT_THICKNESS_LOG = 1
 # ─────────────────────────────────────────────
 # Video Output
 # ─────────────────────────────────────────────
-OUTPUT_CODEC = "mp4v"
-DEFAULT_OUTPUT_PATH = "output.mp4"
+OUTPUT_CODEC = "MJPG"
+DEFAULT_OUTPUT_PATH = "output.avi"
 DEFAULT_FPS = 30.0
 
 # ─────────────────────────────────────────────
