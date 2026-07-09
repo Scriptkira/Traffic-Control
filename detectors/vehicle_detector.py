@@ -13,6 +13,7 @@ import numpy as np
 from ultralytics import YOLO
 
 import config
+from utils.device import resolve_device
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,8 @@ class VehicleDetector:
         logger.info(f"Loading vehicle detection model: {model_path}")
         try:
             self.model = YOLO(model_path)
+            self.device = resolve_device("VehicleDetector")
+            self.model.to(self.device)
             logger.info("Vehicle detection model loaded successfully.")
         except Exception as e:
             logger.error(f"Failed to load vehicle model '{model_path}': {e}")
@@ -88,6 +91,7 @@ class VehicleDetector:
                 frame,
                 conf=self.confidence,
                 classes=self.target_classes,
+                device=self.device,
                 verbose=False,
             )
         except Exception as e:

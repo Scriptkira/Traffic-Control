@@ -15,6 +15,7 @@ import logging
 from typing import Dict
 
 import numpy as np
+import torch
 
 import config
 from core.vehicle_record import VehicleRecord
@@ -41,6 +42,12 @@ class ANPRPipeline:
         """Initialize all pipeline components."""
         logger.info("=" * 60)
         logger.info("Initializing ANPR Pipeline...")
+        logger.info("=" * 60)
+
+        if torch.cuda.is_available():
+            logger.info(f"GPU ACCELERATION: ENABLED — {torch.cuda.get_device_name(0)}")
+        else:
+            logger.warning("GPU ACCELERATION: DISABLED — running on CPU (expect slow inference)")
         logger.info("=" * 60)
 
         # Detection

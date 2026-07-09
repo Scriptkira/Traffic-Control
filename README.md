@@ -57,6 +57,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+`requirements.txt` pulls in `torch`/`torchvision` transitively via `ultralytics`/`easyocr`, which by default installs the **CPU-only** build. If you have a CUDA-capable GPU, install the matching CUDA wheels afterward (check your driver's supported CUDA version with `nvidia-smi`, then pick a matching index, e.g. for CUDA 12.6):
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+```
+
+Verify it worked with `python -c "import torch; print(torch.cuda.is_available())"` — pipeline startup also logs GPU status clearly (`GPU ACCELERATION: ENABLED/DISABLED`).
+
 ### 5. Download YOLO Weights
 
 The **vehicle detection** model (`yolov8n.pt`) is **automatically downloaded** by Ultralytics on first run. No manual download needed.

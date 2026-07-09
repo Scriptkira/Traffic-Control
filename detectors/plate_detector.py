@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 import config
+from utils.device import resolve_device
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,15 @@ class PlateDetector:
         self.confidence = confidence
         self.model = None
         self.use_yolo = False
+        self.device = "cpu"
 
         # Try to load YOLO plate model
         if os.path.exists(model_path):
             try:
                 from ultralytics import YOLO
                 self.model = YOLO(model_path)
+                self.device = resolve_device("PlateDetector")
+                self.model.to(self.device)
                 self.use_yolo = True
                 logger.info(f"Plate detection YOLO model loaded: {model_path}")
             except Exception as e:
@@ -116,6 +120,7 @@ class PlateDetector:
             results = self.model(
                 vehicle_crop,
                 conf=self.confidence,
+                device=self.device,
                 verbose=False,
             )
 

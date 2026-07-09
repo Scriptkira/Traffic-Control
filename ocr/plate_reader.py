@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 import config
+from utils.device import resolve_device
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,16 @@ class PlateReader:
 
         langs = languages or config.OCR_LANGUAGES
 
-        logger.info(f"Initializing EasyOCR (languages={langs}, gpu={gpu})...")
+        # EasyOCR silently falls back to CPU if gpu=True but CUDA isn't
+        # actually available — resolve it ourselves first so the choice
+        # is explicit and logged, not silent.
+        use_gpu = gpu and resolve_device("PlateReader (EasyOCR)") == "cuda"
+
+        logger.info(f"Initializing EasyOCR (languages={langs}, gpu={use_gpu})...")
         try:
             self.reader = easyocr.Reader(
                 langs,
-                gpu=gpu,
+                gpu=use_gpu,
                 verbose=False,
             )
             logger.info("EasyOCR initialized successfully.")
