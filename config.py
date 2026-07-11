@@ -28,8 +28,11 @@ VEHICLE_CLASSES = [2, 3, 5, 7]
 # OCR Settings
 # ─────────────────────────────────────────────
 OCR_CONFIDENCE_THRESHOLD = 0.25
-OCR_LANGUAGES = ["ne", "en"]  # Supports both Devanagari (ne) and English (en) for Nepali plates
-OCR_CHAR_WHITELIST = None      # Disable strict whitelist to allow Devanagari characters
+# Nepali Devanagari + English. The "ne" recognizer roughly doubles
+# per-read latency, but OCR runs on a background thread, so this costs
+# plate-reads-per-second — not frame rate.
+OCR_LANGUAGES = ["ne", "en"]
+OCR_CHAR_WHITELIST = None  # Must stay None to allow Devanagari characters
 OCR_MIN_PLATE_LENGTH = 3   # Reject readings shorter than this
 OCR_MAX_PLATE_LENGTH = 15  # Reject readings longer than this
 OCR_MIN_CROP_HEIGHT = 16   # Skip OCR below this crop height (px) — smaller crops
@@ -43,15 +46,52 @@ PLATE_MIN_VOTES_TO_CONFIRM = 1  # OCR votes required before a reading is logged
 # ─────────────────────────────────────────────
 # Performance / Frame Skipping
 # ─────────────────────────────────────────────
-OCR_EVERY_N_FRAMES = 3     # Only run OCR every N frames (1 = every frame, 3 = skip 2)
-DETECT_EVERY_N_FRAMES = 2  # Only run YOLO detection every N frames (tracker fills gaps)
+OCR_EVERY_N_FRAMES = 6     # Per-vehicle OCR cadence (offset by track_id)
+
+# Vehicle detection runs on its own thread — this no longer gates
+# detection itself, but still sets the tracker's default coast window
+# (N-1 frames of Kalman-predicted output between real detector results).
+# Sized for a ~12Hz detector under a 40-60 FPS frame loop: up to ~7
+# frames can pass between detector results.
+DETECT_EVERY_N_FRAMES = 8
+
+# Cap the async detector thread's rate. Uncapped, it runs YOLO
+# back-to-back and starves the frame loop of CPU/GIL time; ~12 detector
+# updates/sec is plenty for smooth Kalman-interpolated tracking.
+DETECT_MAX_RATE_HZ = 12.0
+
+# Hard per-frame budget on EasyOCR reads. OCR is by far the slowest stage
+# (~50-100ms/read with the Devanagari model); in dense traffic the per-vehicle
+# cadence alone still fires many reads per frame. The track_id offset in the
+# cadence spreads vehicles across frames, so every vehicle still gets read —
+# just never more than this many in any single frame.
+OCR_MAX_READS_PER_FRAME = 2
+
+# OCR engine: "fast" = recognition-only EasyOCR (CRAFT detection
+# bypassed) + Nepali plate-grammar snapping, ~5-8x faster per read.
+# "easyocr" = legacy full readtext path.
+OCR_ENGINE = "fast"
+
+# Downscale frames wider than this before they enter the pipeline.
+# 4K sources are processed (and rendered/written) at 1080p — detection
+# models resize to 640px internally anyway, and this makes every CPU-side
+# stage (copy, annotate, encode, preview) ~4x cheaper. Costs some OCR
+# accuracy on small/distant plates. Set to None to process at native res.
+PROCESS_MAX_WIDTH = 1920
+
+# Run YOLO inference in FP16 on CUDA. Halves activation/weight memory and
+# is noticeably faster on VRAM-constrained cards (e.g. 4GB laptop GPUs)
+# with negligible accuracy impact. Ignored on CPU (unsupported there).
+USE_FP16_ON_GPU = True
 
 
 # ─────────────────────────────────────────────
 # Tracker (SORT) Settings
 # ─────────────────────────────────────────────
 TRACKER_MAX_AGE = 30       # Frames to keep a track without detection
-TRACKER_MIN_HITS = 1       # Min detections before track is confirmed
+TRACKER_MIN_HITS = 2       # Min detections before a track is output — filters
+                           # one-frame YOLO flicker (validated 2026-07-09: cuts
+                           # spurious track IDs ~24% on dense-traffic footage)
 TRACKER_IOU_THRESHOLD = 0.3
 
 # ─────────────────────────────────────────────
@@ -62,7 +102,10 @@ TRIPWIRE_Y_RATIO = 0.75   # Position as fraction of frame height
 # ─────────────────────────────────────────────
 # UI / Visual Settings
 # ─────────────────────────────────────────────
-OUTPUT_SCALE = 2.0                      # HD Upscale multiplier for rendering annotations & logs
+OUTPUT_SCALE = 1.0                      # Upscale multiplier for rendering annotations & logs.
+                                        # Keep at 1.0 for HD/4K sources — upscaling 4K to 8K
+                                        # makes CPU-side MJPG encoding the pipeline bottleneck.
+                                        # Only raise above 1.0 for low-res (e.g. 480p) inputs.
 LOG_PANEL_WIDTH = 320
 LOG_PANEL_MAX_ENTRIES = 20
 LOG_PANEL_BG_COLOR = (15, 15, 15)       # Cyberpunk dark background

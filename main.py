@@ -22,7 +22,7 @@ import cv2
 
 import config
 from core.pipeline import ANPRPipeline
-from utils.video_io import VideoCapture, VideoWriter
+from utils.video_io import FramePrefetcher, VideoCapture, VideoWriter
 
 
 def setup_logging(verbose: bool = False):
@@ -78,9 +78,33 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--no-output",
+        action="store_true",
+        help="Skip writing the annotated output video (live preview only; "
+             "frees CPU that MJPG encoding would otherwise use).",
+    )
+
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable debug-level logging.",
+    )
+
+    parser.add_argument(
+        "--output-scale",
+        type=float,
+        default=None,
+        help=f"Override the output upscale multiplier "
+             f"(default: {config.OUTPUT_SCALE} from config.py). "
+             f"Use 1.0 to avoid upscaling already-HD/4K sources.",
+    )
+
+    parser.add_argument(
+        "--codec",
+        default=None,
+        help=f"Override the output FourCC codec "
+             f"(default: {config.OUTPUT_CODEC} from config.py). "
+             f"e.g. 'mp4v' for a much smaller .mp4 than MJPG .avi.",
     )
 
     return parser.parse_args()
@@ -91,7 +115,17 @@ def main():
     args = parse_args()
     setup_logging(args.verbose)
 
+    # Shorter GIL switch interval: with detection/OCR/decode all on
+    # background threads, the default 5ms lets a CPU-bound worker hold
+    # the GIL long enough to visibly stall the frame loop.
+    sys.setswitchinterval(0.001)
+
     logger = logging.getLogger("main")
+
+    if args.output_scale is not None:
+        config.OUTPUT_SCALE = args.output_scale
+    if args.codec is not None:
+        config.OUTPUT_CODEC = args.codec
 
     # Determine show mode
     show_preview = args.show and not args.no_show
@@ -120,23 +154,49 @@ def main():
     # ── Initialize pipeline ──
     pipeline = ANPRPipeline()
 
+    # ── Determine processing resolution ──
+    # Frames wider than PROCESS_MAX_WIDTH are downscaled before entering
+    # the pipeline (see config.py for the speed/accuracy trade-off).
+    proc_w, proc_h = video_cap.width, video_cap.height
+    proc_scale = 1.0
+    max_proc_w = getattr(config, "PROCESS_MAX_WIDTH", None)
+    if max_proc_w and video_cap.width > max_proc_w:
+        proc_scale = max_proc_w / video_cap.width
+        proc_w = max_proc_w
+        proc_h = int(round(video_cap.height * proc_scale))
+        logger.info(
+            f"Processing at {proc_w}x{proc_h} "
+            f"(downscaled from {video_cap.width}x{video_cap.height} for speed)"
+        )
+
     # ── Initialize video writer ──
     # Output width includes the log panel, upscaled for HD output
     scale = getattr(config, "OUTPUT_SCALE", 1.0)
-    output_width = int(video_cap.width * scale) + int(config.LOG_PANEL_WIDTH * scale)
-    output_height = int(video_cap.height * scale)
+    output_width = int(proc_w * scale) + int(config.LOG_PANEL_WIDTH * scale)
+    output_height = int(proc_h * scale)
 
-    try:
-        video_writer = VideoWriter(
-            output_path=args.output,
-            width=output_width,
-            height=output_height,
-            fps=video_cap.fps,
-        )
-    except IOError as e:
-        logger.error(f"Failed to create output video: {e}")
-        video_cap.release()
-        sys.exit(1)
+    video_writer = None
+    if args.no_output:
+        logger.info("Output video disabled (--no-output).")
+    else:
+        try:
+            video_writer = VideoWriter(
+                output_path=args.output,
+                width=output_width,
+                height=output_height,
+                fps=video_cap.fps,
+            )
+        except IOError as e:
+            logger.error(f"Failed to create output video: {e}")
+            video_cap.release()
+            sys.exit(1)
+
+    # ── Frame prefetcher: decode + downscale on a background thread ──
+    prefetcher = FramePrefetcher(
+        video_cap,
+        proc_size=(proc_w, proc_h) if proc_scale != 1.0 else None,
+        keep_hires=proc_scale != 1.0,
+    )
 
     # ── Processing loop ──
     frame_num = 0
@@ -148,7 +208,7 @@ def main():
     try:
         while True:
             if not paused:
-                ret, frame = video_cap.read()
+                ret, frame, hires_frame = prefetcher.read()
 
                 if not ret:
                     logger.info("End of video reached.")
@@ -156,11 +216,13 @@ def main():
 
                 frame_num += 1
 
-                # Process through pipeline
-                annotated = pipeline.process_frame(frame)
+                # Process through pipeline (hires_frame carries the
+                # original full-res frame for OCR-quality crops)
+                annotated = pipeline.process_frame(frame, hires_frame=hires_frame)
 
                 # Write output
-                video_writer.write(annotated)
+                if video_writer is not None:
+                    video_writer.write(annotated)
 
                 # Progress logging (every 100 frames)
                 if frame_num % 100 == 0:
@@ -179,8 +241,9 @@ def main():
                         f"Plates: {stats['plates_detected']}"
                     )
 
-                # Show preview
-                if show_preview:
+                # Show preview (every 2nd frame — halves display overhead
+                # without visibly changing the preview)
+                if show_preview and frame_num % 2 == 0:
                     # Resize for display if too large
                     display = annotated
                     disp_h, disp_w = display.shape[:2]
@@ -190,12 +253,14 @@ def main():
                         display = cv2.resize(
                             display,
                             (int(disp_w * scale), int(disp_h * scale)),
+                            interpolation=cv2.INTER_NEAREST,
                         )
 
                     cv2.imshow("ANPR Traffic Camera System", display)
 
-            # Handle keyboard input
-            if show_preview:
+            # Handle keyboard input (only on frames we actually display —
+            # waitKey costs several ms on Windows)
+            if show_preview and (paused or frame_num % 2 == 0):
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q') or key == 27:  # Q or ESC
                     logger.info("User quit.")
@@ -226,11 +291,15 @@ def main():
         logger.info(f"  Average FPS      : {avg_fps:.1f}")
         logger.info(f"  Vehicles tracked : {stats['total_vehicles_tracked']}")
         logger.info(f"  Plates detected  : {stats['plates_detected']}")
-        logger.info(f"  Output saved to  : {args.output}")
+        if video_writer is not None:
+            logger.info(f"  Output saved to  : {args.output}")
         logger.info("=" * 60)
 
+        pipeline.shutdown()
+        prefetcher.stop()
         video_cap.release()
-        video_writer.release()
+        if video_writer is not None:
+            video_writer.release()
         if show_preview:
             cv2.destroyAllWindows()
 

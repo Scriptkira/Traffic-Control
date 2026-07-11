@@ -69,6 +69,7 @@ class VehicleDetector:
             self.model = YOLO(model_path)
             self.device = resolve_device("VehicleDetector")
             self.model.to(self.device)
+            self.half = self.device == "cuda" and getattr(config, "USE_FP16_ON_GPU", False)
             logger.info("Vehicle detection model loaded successfully.")
         except Exception as e:
             logger.error(f"Failed to load vehicle model '{model_path}': {e}")
@@ -92,6 +93,7 @@ class VehicleDetector:
                 conf=self.confidence,
                 classes=self.target_classes,
                 device=self.device,
+                quantize=16 if self.half else None,
                 verbose=False,
             )
         except Exception as e:

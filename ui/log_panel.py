@@ -88,8 +88,10 @@ class LogPanel:
         """
         Add or update a log entry.
 
-        If the vehicle ID already has an entry, only updates if the
-        new reading has higher confidence.
+        Callers (VehicleRecord.update_plate via the pipeline) already
+        decide whether a reading is worth (re-)logging — this just
+        records it, so the panel never silently disagrees with the
+        console log about whether an update happened.
 
         Args:
             vehicle_id: Tracked vehicle ID.
@@ -98,14 +100,8 @@ class LogPanel:
             timestamp: Optional timestamp string.
 
         Returns:
-            True if entry was added/updated, False if skipped.
+            True if entry was added/updated.
         """
-        if vehicle_id in self._logged_ids:
-            existing = self._logged_ids[vehicle_id]
-            # Only update if new reading has better confidence or is longer
-            if confidence <= existing.confidence and len(plate_text) <= len(existing.plate_text):
-                return False
-
         entry = LogEntry(
             vehicle_id=vehicle_id,
             plate_text=plate_text,

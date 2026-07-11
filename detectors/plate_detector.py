@@ -9,7 +9,7 @@ Fallback: If no YOLO plate model is available, uses OpenCV contour-based
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -52,6 +52,7 @@ class PlateDetector:
         self.model = None
         self.use_yolo = False
         self.device = "cpu"
+        self.half = False
 
         # Try to load YOLO plate model
         if os.path.exists(model_path):
@@ -60,6 +61,7 @@ class PlateDetector:
                 self.model = YOLO(model_path)
                 self.device = resolve_device("PlateDetector")
                 self.model.to(self.device)
+                self.half = self.device == "cuda" and getattr(config, "USE_FP16_ON_GPU", False)
                 self.use_yolo = True
                 logger.info(f"Plate detection YOLO model loaded: {model_path}")
             except Exception as e:
@@ -107,6 +109,94 @@ class PlateDetector:
         else:
             return self._detect_contour(frame, vehicle_crop, vx1, vy1)
 
+    # ── Batched detection (multiple vehicles in one YOLO call) ──────
+
+    def detect_in_rois_batch(
+        self,
+        frame: np.ndarray,
+        vehicle_bboxes: List[tuple],
+    ) -> List[List[PlateDetection]]:
+        """
+        Batch-detect plates for multiple vehicle bounding boxes in a
+        single YOLO inference call.
+
+        Falls back to sequential per-vehicle calls for the contour path
+        or when the batch is empty.
+
+        Args:
+            frame: Full BGR frame.
+            vehicle_bboxes: List of (x1, y1, x2, y2) vehicle boxes.
+
+        Returns:
+            List of PlateDetection lists, one per input vehicle bbox
+            (same order).
+        """
+        if not vehicle_bboxes:
+            return []
+
+        # Contour path doesn't benefit from batching — just loop.
+        if not self.use_yolo:
+            return [self.detect_in_roi(frame, bbox) for bbox in vehicle_bboxes]
+
+        h, w = frame.shape[:2]
+        crops = []
+        offsets = []       # (offset_x, offset_y) per valid crop
+        idx_map = []       # Maps each crop position back to the bbox index
+
+        for i, bbox in enumerate(vehicle_bboxes):
+            vx1, vy1, vx2, vy2 = [int(v) for v in bbox]
+            vx1 = max(0, vx1)
+            vy1 = max(0, vy1)
+            vx2 = min(w, vx2)
+            vy2 = min(h, vy2)
+            if vx2 - vx1 < 20 or vy2 - vy1 < 20:
+                continue
+            crops.append(frame[vy1:vy2, vx1:vx2])
+            offsets.append((vx1, vy1))
+            idx_map.append(i)
+
+        # Prepare result list (one entry per input bbox).
+        results: List[List[PlateDetection]] = [[] for _ in vehicle_bboxes]
+
+        if not crops:
+            return results
+
+        try:
+            yolo_results = self.model(
+                crops,
+                conf=self.confidence,
+                device=self.device,
+                quantize=16 if self.half else None,
+                verbose=False,
+            )
+
+            for j, res in enumerate(yolo_results):
+                if res.boxes is None or len(res.boxes) == 0:
+                    continue
+                ox, oy = offsets[j]
+                bbox_idx = idx_map[j]
+                for k in range(len(res.boxes)):
+                    b = res.boxes.xyxy[k].cpu().numpy().astype(int)
+                    conf = float(res.boxes.conf[k].cpu().numpy())
+                    px1 = b[0] + ox
+                    py1 = b[1] + oy
+                    px2 = b[2] + ox
+                    py2 = b[3] + oy
+                    plate_crop = frame[py1:py2, px1:px2]
+                    if plate_crop.size > 0:
+                        results[bbox_idx].append(PlateDetection(
+                            bbox=(px1, py1, px2, py2),
+                            confidence=conf,
+                            crop=plate_crop,
+                        ))
+                # Sort by confidence descending for this vehicle.
+                results[bbox_idx].sort(key=lambda d: d.confidence, reverse=True)
+
+        except Exception as e:
+            logger.debug(f"Batched YOLO plate detection failed: {e}")
+
+        return results
+
     def _detect_yolo(
         self,
         frame: np.ndarray,
@@ -121,6 +211,7 @@ class PlateDetector:
                 vehicle_crop,
                 conf=self.confidence,
                 device=self.device,
+                quantize=16 if self.half else None,
                 verbose=False,
             )
 

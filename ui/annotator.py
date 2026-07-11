@@ -72,10 +72,17 @@ class FrameAnnotator:
             """
         x1, y1, x2, y2 = [int(v) for v in bbox]
 
-        # 1. Draw subtle semi-transparent box overlay
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), self.vehicle_color, -1)
-        cv2.addWeighted(overlay, 0.06, frame, 0.94, 0, frame)
+        # 1. Subtle semi-transparent fill — blend only inside the box ROI.
+        # (A full-frame copy + addWeighted per vehicle made this the
+        # pipeline's hottest function in dense traffic: ~38ms/frame.)
+        fh, fw = frame.shape[:2]
+        rx1, ry1 = max(0, x1), max(0, y1)
+        rx2, ry2 = min(fw, x2), min(fh, y2)
+        if rx2 > rx1 and ry2 > ry1:
+            roi = frame[ry1:ry2, rx1:rx2]
+            tint = np.empty_like(roi)
+            tint[:] = self.vehicle_color
+            cv2.addWeighted(tint, 0.06, roi, 0.94, 0, dst=roi)
 
         # 2. Draw thin bounding box border
         border_thickness = max(1, int(1 * scale))
@@ -250,10 +257,16 @@ class FrameAnnotator:
         # Draw main tripwire line
         cv2.line(frame, (0, y_pos), (w, y_pos), color, thickness, cv2.LINE_AA)
 
-        # Draw a semi-transparent glow strip along the tripwire
-        glow = frame.copy()
-        cv2.line(glow, (0, y_pos), (w, y_pos), color, int(8 * scale), cv2.LINE_AA)
-        cv2.addWeighted(glow, 0.15, frame, 0.85, 0, frame)
+        # Semi-transparent glow strip — blend only the band of rows the
+        # glow touches instead of copying the whole frame.
+        glow_t = int(8 * scale)
+        by1 = max(0, y_pos - glow_t)
+        by2 = min(h, y_pos + glow_t + 1)
+        if by2 > by1:
+            band = frame[by1:by2]
+            glow = band.copy()
+            cv2.line(glow, (0, y_pos - by1), (w, y_pos - by1), color, glow_t, cv2.LINE_AA)
+            cv2.addWeighted(glow, 0.15, band, 0.85, 0, dst=band)
 
         # Text label
         label = "▲ TRIPWIRE ALERT ACTIVE" if is_alert else "▲ VEHICLE TRIPWIRE"

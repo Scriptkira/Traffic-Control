@@ -5,10 +5,12 @@ Maintains the best OCR reading and tracking state for each
 vehicle across multiple frames.
 """
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
 import config
+from ocr.text_normalize import clean_consensus_reading
 
 
 @dataclass
@@ -32,6 +34,11 @@ class VehicleRecord:
     # History of raw readings: list of (plate_text, confidence, area)
     plate_history: list = field(default_factory=list)
 
+    # A candidate replacement consensus text seen on the immediately
+    # preceding vote, awaiting a second, agreeing vote before it's
+    # allowed to overwrite an already-logged reading (see update_plate).
+    pending_consensus: Optional[str] = None
+
     def update_plate(
         self,
         plate_text: str,
@@ -53,13 +60,10 @@ class VehicleRecord:
 
         # Append new reading to history: (plate_text, confidence, area)
         self.plate_history.append((plate_text, confidence, area))
-        
-        # Compute consensus over all historical readings
-        from collections import defaultdict
-        
+
         # Find max length of cleaned readings in history
         max_len = max(len(r) for r, _, _ in self.plate_history)
-        
+
         consensus_chars = []
         for i in range(1, max_len + 1):
             char_weights = defaultdict(float)
@@ -71,14 +75,12 @@ class VehicleRecord:
             if char_weights:
                 best_char = max(char_weights.items(), key=lambda x: x[1])[0]
                 consensus_chars.append(best_char)
-                
-        consensus = "".join(reversed(consensus_chars))
-        
-        # Clean and translate consensus using shape-based mapping
-        cleaned_consensus = self.clean_consensus(consensus)
 
-        text_changed = cleaned_consensus != self.best_plate_text
-        self.best_plate_text = cleaned_consensus
+        consensus = "".join(reversed(consensus_chars))
+
+        # Normalize Devanagari numerals and strip punctuation/whitespace
+        cleaned_consensus = clean_consensus_reading(consensus)
+
         self.best_confidence = max(self.best_confidence, confidence)
         if plate_bbox:
             self.plate_bbox = plate_bbox
@@ -89,67 +91,31 @@ class VehicleRecord:
         # "new" plate reading for the same vehicle.
         min_votes = getattr(config, "PLATE_MIN_VOTES_TO_CONFIRM", 3)
         if len(self.plate_history) < min_votes:
+            self.best_plate_text = cleaned_consensus
+            self.pending_consensus = None
             return False
 
         if not self.logged:
             self.logged = True
+            self.best_plate_text = cleaned_consensus
+            self.pending_consensus = None
             return True
 
-        return text_changed
+        # Already logged once. A single new vote that disagrees with the
+        # stored reading is often just noise from a fresh OCR angle, not
+        # a genuine correction — only accept the change once the same
+        # new value shows up on two consecutive votes.
+        if cleaned_consensus == self.best_plate_text:
+            self.pending_consensus = None
+            return False
 
-    def clean_consensus(self, text: str) -> str:
-        """
-        Translates character mappings (English letters visually similar to Devanagari numerals)
-        and isolates the registration digits.
-        """
-        import re
-        
-        # Convert Devanagari numbers to English numbers
-        devanagari_nums = {
-            '०': '0', '१': '1', '२': '2', '३': '3', '४': '4',
-            '५': '5', '६': '6', '७': '7', '८': '8', '९': '9'
-        }
-        
-        text_upper = text.upper()
-        normalized = ""
-        for char in text_upper:
-            if char in devanagari_nums:
-                normalized += devanagari_nums[char]
-            else:
-                normalized += char
-                
-        # Common English OCR misreads of Devanagari plates
-        normalized = re.sub(r'PHI', '88', normalized)
-        normalized = re.sub(r'PH', '88', normalized)
-        normalized = re.sub(r'DN', '39', normalized)
-        normalized = re.sub(r'DI', '39', normalized)
-        normalized = re.sub(r'PI', '87', normalized)
-        
-        # Character mapping based on visual shape similarity to Devanagari numerals
-        char_map = {
-            'O': '0', 'Q': '0', 'U': '0',
-            'I': '1', 'L': '1', 'T': '6',
-            'Z': '2',
-            'D': '3', 'J': '3', 'A': '3',
-            'Y': '4',
-            'S': '5',
-            'B': '8', 'P': '8', 'H': '8', 'R': '8',
-            'N': '9', 'G': '9', 'V': '6'
-        }
-        
-        mapped = ""
-        for char in normalized:
-            if char in char_map:
-                mapped += char_map[char]
-            else:
-                mapped += char
-                
-        # Keep only digits
-        digits = re.sub(r'[^0-9]', '', mapped)
-        
-        if len(digits) >= 4:
-            return digits[-4:]
-        return digits if digits else text
+        if cleaned_consensus == self.pending_consensus:
+            self.best_plate_text = cleaned_consensus
+            self.pending_consensus = None
+            return True
+
+        self.pending_consensus = cleaned_consensus
+        return False
 
     def update_position(self, bbox: tuple):
         """Update the vehicle's last known position."""
@@ -160,3 +126,37 @@ class VehicleRecord:
     def has_plate(self) -> bool:
         """Whether a plate has been successfully read."""
         return self.best_plate_text is not None
+
+    # ── Relative plate position caching ──────────────────────────
+    # Once a vehicle's plate has been successfully read at high confidence,
+    # we store where the plate sits relative to the vehicle bbox so we can
+    # project it onto future frames without running the plate detector.
+
+    def cache_relative_plate_pos(self, plate_bbox: tuple, vehicle_bbox: tuple):
+        """Store plate position as fractions of the vehicle bbox dimensions."""
+        vx1, vy1, vx2, vy2 = vehicle_bbox
+        vw = max(1, vx2 - vx1)
+        vh = max(1, vy2 - vy1)
+        px1, py1, px2, py2 = plate_bbox
+        self._rel_plate = (
+            (px1 - vx1) / vw,
+            (py1 - vy1) / vh,
+            (px2 - vx1) / vw,
+            (py2 - vy1) / vh,
+        )
+
+    def project_plate_bbox(self, vehicle_bbox: tuple):
+        """Return the cached plate bbox projected onto the current vehicle bbox, or None."""
+        rel = getattr(self, "_rel_plate", None)
+        if rel is None:
+            return None
+        vx1, vy1, vx2, vy2 = vehicle_bbox
+        vw = vx2 - vx1
+        vh = vy2 - vy1
+        return (
+            int(vx1 + rel[0] * vw),
+            int(vy1 + rel[1] * vh),
+            int(vx1 + rel[2] * vw),
+            int(vy1 + rel[3] * vh),
+        )
+
