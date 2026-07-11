@@ -244,10 +244,15 @@ class PlateDetector:
 
             # Sort by confidence descending
             detections = sorted(detections, key=lambda x: x.confidence, reverse=True)
+            logger.debug(
+                f"YOLO plate detection: {len(detections)} candidate(s) in "
+                f"{vehicle_crop.shape[1]}x{vehicle_crop.shape[0]} ROI "
+                f"(conf >= {self.confidence})"
+            )
             return detections
 
         except Exception as e:
-            logger.debug(f"YOLO plate detection failed: {e}")
+            logger.warning(f"YOLO plate detection failed: {e}")
             return []
 
     def _detect_contour(
@@ -338,11 +343,16 @@ class PlateDetector:
                         crop=plate_crop,
                     ))
 
+            logger.debug(
+                f"Contour plate detection: {len(all_candidates)} raw "
+                f"candidate(s), {len(detections)} kept after area/dedup "
+                f"filters in {orig_crop_w}x{orig_crop_h} ROI"
+            )
             # Limit to top 5 candidates
             return detections[:5]
 
         except Exception as e:
-            logger.debug(f"Contour plate detection failed: {e}")
+            logger.warning(f"Contour plate detection failed: {e}")
             return []
 
     def _edge_contours(
@@ -430,16 +440,25 @@ class PlateDetector:
 
         aspect_ratio = w / h
 
-        # Plate aspect ratio: 1.5 to 7.0
+        # Plate aspect ratio: 1.2 to 7.0 — the low end admits two-line
+        # Nepali plates (~1.5-2.5, near-square when tightly cropped);
+        # the high end covers single-line Euro-style plates.
         # Minimum size: w >= 20px, h >= 8px (after potential upscaling)
-        # Maximum area: 8000px^2 (in upscaled space) to avoid grabbing vehicle body
-        if 1.5 <= aspect_ratio <= 7.0 and w >= 20 and h >= 8 and area < 8000:
+        # Maximum area: 30000px^2 in the 3x-upscaled space (~58x58px at
+        # original scale). The previous 8000 cap (~30x30px original)
+        # rejected every close vehicle's plate outright.
+        if 1.2 <= aspect_ratio <= 7.0 and w >= 20 and h >= 8 and area < 30000:
             # Score: prefer medium-sized, rectangular shapes with plate-like AR
             rect_score = area / (w * h)  # How rectangular (0 to 1)
             # Penalize very large detections (likely not plates)
-            size_score = min(area / 1500.0, 1.0) * (1.0 - min(area / 8000.0, 0.5))
-            # Prefer aspect ratios close to typical plates (3.0 to 5.0)
-            ar_score = 1.0 - min(abs(aspect_ratio - 4.0) / 3.0, 1.0)
+            size_score = min(area / 1500.0, 1.0) * (1.0 - min(area / 30000.0, 0.5))
+            # Two plate shapes exist: two-line Nepali (~2.0) and
+            # single-line (~4.0-4.5). Score by distance to the NEAREST
+            # peak so neither format is penalized.
+            ar_score = max(
+                1.0 - min(abs(aspect_ratio - 2.0) / 1.5, 1.0),
+                1.0 - min(abs(aspect_ratio - 4.0) / 3.0, 1.0),
+            )
             score = rect_score * 0.3 + size_score * 0.3 + ar_score * 0.4
 
             return (x, y + y_offset, w, h, score)

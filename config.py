@@ -18,7 +18,9 @@ PLATE_MODEL_PATH = os.path.join(MODELS_DIR, "license_plate_detector.pt")
 # Detection Thresholds
 # ─────────────────────────────────────────────
 VEHICLE_CONFIDENCE = 0.25
-PLATE_CONFIDENCE = 0.3
+PLATE_CONFIDENCE = 0.3   # Lowering to 0.25 measured no gain in confirmed
+                         # plates (28 vs 34-vehicle baseline) — it only adds
+                         # junk candidates for the OCR stage to reject
 
 # COCO class IDs for vehicles
 # 2=car, 3=motorcycle, 5=bus, 7=truck
@@ -84,6 +86,23 @@ PROCESS_MAX_WIDTH = 1920
 # with negligible accuracy impact. Ignored on CPU (unsupported there).
 USE_FP16_ON_GPU = True
 
+
+# ─────────────────────────────────────────────
+# Diagnostics
+# ─────────────────────────────────────────────
+# When True, the OCR process saves every plate crop it OCRs (accepted
+# AND rejected, with outcome/confidence in the filename) plus a capped
+# sample of vehicle ROIs where plate detection found nothing, to
+# DIAG_CROPS_DIR for manual inspection. Combine with -v for per-job
+# debug logs from the OCR process.
+DIAGNOSTIC_MODE = False
+DIAG_CROPS_DIR = os.path.join(BASE_DIR, "debug_crops")
+DIAG_MAX_EMPTY_ROIS_PER_TRACK = 3   # Cap "no candidates" ROI dumps per vehicle
+
+# The OCR process logs a stage-funnel summary (jobs → candidates →
+# OCR attempts → accepted) every N jobs, so failures are attributable
+# to a stage even without -v.
+OCR_STATS_EVERY_N_JOBS = 200
 
 # ─────────────────────────────────────────────
 # Tracker (SORT) Settings

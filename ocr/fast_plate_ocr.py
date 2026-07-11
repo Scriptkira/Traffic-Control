@@ -124,8 +124,13 @@ class FastPlateReader:
         Returns (plate_text, confidence) or None.
         """
         if plate_crop is None or plate_crop.size == 0:
+            logger.debug("reject: empty crop")
             return None
         if plate_crop.shape[0] < config.OCR_MIN_CROP_HEIGHT:
+            logger.debug(
+                f"reject: crop height {plate_crop.shape[0]}px < "
+                f"OCR_MIN_CROP_HEIGHT ({config.OCR_MIN_CROP_HEIGHT}px)"
+            )
             return None
 
         try:
@@ -150,6 +155,10 @@ class FastPlateReader:
                     confs.append(res[1])
 
             if not texts:
+                logger.debug(
+                    f"reject: recognizer returned no text "
+                    f"({len(strips)} line strip(s))"
+                )
                 return None
 
             # Guard against reading the same text twice via a bad line
@@ -165,6 +174,10 @@ class FastPlateReader:
             raw = "".join(texts)
             cleaned = clean_raw_reading(raw, self.min_length, self.max_length)
             if not cleaned:
+                logger.debug(
+                    f"reject: raw read '{raw}' emptied by normalization "
+                    f"(length bounds {self.min_length}-{self.max_length})"
+                )
                 return None
 
             confidence = float(np.mean(confs))
@@ -180,10 +193,14 @@ class FastPlateReader:
 
             if len(cleaned) >= self.min_length and confidence >= self.conf_threshold:
                 return (cleaned, min(1.0, confidence))
+            logger.debug(
+                f"reject: '{cleaned}' conf={confidence:.2f} below "
+                f"threshold {self.conf_threshold} (not format-valid)"
+            )
             return None
 
         except Exception as e:
-            logger.debug(f"Fast OCR failed on plate crop: {e}")
+            logger.warning(f"Fast OCR failed on plate crop: {e}")
             return None
 
     # ── Internals ───────────────────────────────────────────────────

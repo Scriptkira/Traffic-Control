@@ -80,7 +80,11 @@ class ANPRPipeline:
         self._ocr_out: mp.Queue = mp.Queue()
         self._ocr_proc = mp.Process(
             target=plate_ocr_process_main,
-            args=(self._ocr_in, self._ocr_out),
+            args=(
+                self._ocr_in,
+                self._ocr_out,
+                logging.getLogger().getEffectiveLevel(),
+            ),
             daemon=True,
         )
         self._ocr_proc.start()
@@ -401,6 +405,16 @@ class ANPRPipeline:
                     f"Plate detected — ID:{track_id} "
                     f"Plate:{record.best_plate_text} "
                     f"Conf:{confidence:.2f}"
+                )
+            else:
+                # The read reached consensus voting but didn't (yet)
+                # change the logged text — make that visible so reads
+                # "disappearing" here aren't mistaken for OCR failures.
+                logger.debug(
+                    f"OCR read ID:{track_id} '{plate_text}' "
+                    f"conf={confidence:.2f} — vote {len(record.plate_history)} "
+                    f"recorded, consensus unchanged "
+                    f"('{record.best_plate_text}')"
                 )
 
     def _check_tripwire(self, record: VehicleRecord, frame_height: int):
