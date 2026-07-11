@@ -7,13 +7,13 @@ text post-processing.
 """
 
 import logging
-import re
 from typing import Optional, Tuple
 
 import cv2
 import numpy as np
 
 import config
+from ocr.text_normalize import clean_raw_reading
 from utils.device import resolve_device
 
 logger = logging.getLogger(__name__)
@@ -96,27 +96,37 @@ class PlateReader:
             # 1. OCR on the full processed crop
             full_results = self.reader.readtext(processed, **ocr_args)
 
-            # 2. OCR on the bottom half of the processed crop (if crop height is large enough)
+            # 2. Bottom-half fallback pass — sometimes catches the
+            # registration-digit line when the full-crop pass misses it
+            # (small/blurry text). Each readtext call is the single most
+            # expensive operation in the pipeline, so only pay for the
+            # second pass when the first came back empty.
             bottom_results = []
-            h, w = processed.shape[:2]
-            if plate_crop.shape[0] >= 15:
-                # Capture the bottom 55% of the crop
-                bottom_half = processed[int(h*0.45):h, :]
+            if not full_results:
+                h, w = processed.shape[:2]
+                bottom_half = processed[int(h * 0.45):h, :]
                 bottom_results = self.reader.readtext(bottom_half, **ocr_args)
 
-            # Gather all detected candidates
+            # Nepali plates are commonly two lines (province/category on
+            # top, registration digits below). EasyOCR returns each line
+            # as a separate (bbox, text, conf) detection — merge same-pass
+            # detections top-to-bottom into one string instead of picking
+            # only the single highest-confidence fragment, so the full
+            # plate is preserved rather than just whichever line won.
+            full_text, full_conf = self._merge_segments(full_results)
+            bottom_text, bottom_conf = self._merge_segments(bottom_results)
+
             candidates = []
-            
-            for (bbox, text, conf) in full_results:
-                candidates.append((text, conf))
-                
-            for (bbox, text, conf) in bottom_results:
-                candidates.append((text, conf))
+            if full_text:
+                candidates.append((full_text, full_conf))
+            if bottom_text:
+                candidates.append((bottom_text, bottom_conf))
 
             if not candidates:
                 return None
 
-            # Process candidates and choose the one with the highest confidence
+            # Prefer the more complete cleaned reading (more of the plate
+            # captured); break ties on confidence.
             best_text = None
             best_conf = 0.0
 
@@ -124,21 +134,19 @@ class PlateReader:
                 cleaned = self._postprocess(text)
                 if not cleaned:
                     continue
-                
-                # Boost confidence if the result ends with or consists of a good digit sequence (3-4 digits)
-                digits = re.findall(r'\d+', cleaned)
-                boost = 0.0
-                if digits:
-                    all_digits = "".join(digits)
-                    if len(all_digits) >= 3:
-                        boost = 0.15 # Boost conf to prioritize valid numbers
-                        
-                weighted_conf = conf + boost
-                if weighted_conf > best_conf:
-                    best_conf = weighted_conf
-                    best_text = cleaned
 
-            if best_text and len(best_text) >= self.min_length:
+                is_better = best_text is None or (
+                    (len(cleaned), conf) > (len(best_text), best_conf)
+                )
+                if is_better:
+                    best_text = cleaned
+                    best_conf = conf
+
+            if (
+                best_text
+                and len(best_text) >= self.min_length
+                and best_conf >= self.conf_threshold
+            ):
                 return (best_text, min(1.0, best_conf))
 
             return None
@@ -180,58 +188,53 @@ class PlateReader:
 
         return processed
 
+    def _merge_segments(self, results: list) -> Tuple[Optional[str], float]:
+        """
+        Merge multiple text detections from one readtext() pass into a
+        single top-to-bottom string (see call site for why), averaging
+        confidence across the merged segments.
+
+        EasyOCR sometimes returns two overlapping boxes for the same line
+        (e.g. a sub-word box nested inside a full-line box) — segments
+        whose vertical extent overlaps heavily are treated as duplicates
+        of the same line and only the higher-confidence one is kept,
+        rather than concatenating both into a garbled repeat.
+        """
+        if not results:
+            return None, 0.0
+
+        def y_range(bbox):
+            ys = [pt[1] for pt in bbox]
+            return min(ys), max(ys)
+
+        def y_overlap_ratio(r1, r2):
+            lo = max(r1[0], r2[0])
+            hi = min(r1[1], r2[1])
+            overlap = max(0.0, hi - lo)
+            shorter = min(r1[1] - r1[0], r2[1] - r2[0])
+            return overlap / shorter if shorter > 0 else 0.0
+
+        ordered = sorted(results, key=lambda r: y_range(r[0])[0])
+
+        deduped = []
+        for bbox, text, conf in ordered:
+            yr = y_range(bbox)
+            dup_idx = None
+            for i, (kept_yr, _, kept_conf) in enumerate(deduped):
+                if y_overlap_ratio(yr, kept_yr) > 0.5:
+                    dup_idx = i
+                    break
+            if dup_idx is None:
+                deduped.append((yr, text, conf))
+            elif conf > deduped[dup_idx][2]:
+                deduped[dup_idx] = (yr, text, conf)
+
+        merged_text = "".join(t for _, t, _ in deduped)
+        merged_conf = sum(c for _, _, c in deduped) / len(deduped)
+        return merged_text, merged_conf
+
     def _postprocess(self, text: str) -> Optional[str]:
         """
         Clean and validate OCR output using Devanagari-to-English translation mapping.
         """
-        # Convert Devanagari numbers to English numbers
-        devanagari_nums = {
-            '०': '0', '१': '1', '२': '2', '३': '3', '४': '4',
-            '५': '5', '६': '6', '७': '7', '८': '8', '९': '9'
-        }
-        
-        text_upper = text.upper()
-        normalized = ""
-        for char in text_upper:
-            if char in devanagari_nums:
-                normalized += devanagari_nums[char]
-            else:
-                normalized += char
-                
-        # Common English OCR misreads of Devanagari plates
-        normalized = re.sub(r'PHI', '88', normalized)
-        normalized = re.sub(r'PH', '88', normalized)
-        normalized = re.sub(r'DN', '39', normalized)
-        normalized = re.sub(r'DI', '39', normalized)
-        
-        # Character mapping
-        char_map = {
-            'D': '3', 'O': '0', 'J': '3', 'Q': '0', 'U': '0',
-            'B': '8', 'G': '9', 'S': '5', 'Z': '2', 'L': '1', 'R': '8'
-        }
-        
-        mapped = ""
-        for char in normalized:
-            if char in char_map:
-                mapped += char_map[char]
-            else:
-                mapped += char
-                
-        # Keep only digits and letters
-        cleaned = re.sub(r'[^A-Z0-9]', '', mapped)
-        
-        # If it contains 4 or more digits, isolate the last 4 digits (standard registration number)
-        digits = re.findall(r'\d+', cleaned)
-        if digits:
-            all_digits = "".join(digits)
-            if len(all_digits) >= 4:
-                return all_digits[-4:]
-                
-        # Length validation
-        if len(cleaned) < self.min_length:
-            return None
-
-        if len(cleaned) > self.max_length:
-            cleaned = cleaned[:self.max_length]
-
-        return cleaned
+        return clean_raw_reading(text, self.min_length, self.max_length)
