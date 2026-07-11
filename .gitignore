@@ -23,6 +23,9 @@ models/license_plate_detector.pt
 *.mp4
 !sample.mp4
 *.avi
+*.MOV
+*.mov
+output/
 
 # Debug crops and images
 debug_crops/
